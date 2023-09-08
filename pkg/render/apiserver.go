@@ -979,10 +979,13 @@ func (c *apiServerComponent) hostNetwork() bool {
 
 // apiServerContainer creates the API server container.
 func (c *apiServerComponent) apiServerContainer() corev1.Container {
+	rootRequired := false
+
 	volumeMounts := []corev1.VolumeMount{
 		c.cfg.TLSKeyPair.VolumeMount(c.SupportedOSType()),
 	}
 	if c.cfg.Installation.Variant == operatorv1.TigeraSecureEnterprise {
+		rootRequired = true
 		if c.cfg.ManagementCluster != nil {
 			volumeMounts = append(volumeMounts, c.cfg.TunnelCASecret.VolumeMount(c.SupportedOSType()))
 		}
@@ -1006,15 +1009,22 @@ func (c *apiServerComponent) apiServerContainer() corev1.Container {
 		env = append(env, corev1.EnvVar{Name: "MULTI_INTERFACE_MODE", Value: c.cfg.Installation.CalicoNetwork.MultiInterfaceMode.Value()})
 	}
 
+	var securityContext *corev1.SecurityContext
+	if rootRequired {
+		// OpenShift apiserver needs privileged access to write audit logs to host path volume.
+		// Audit logs are owned by root on hosts so we need to be root user and group.
+		securityContext = securitycontext.NewRootContext(c.cfg.Openshift)
+	} else {
+		securityContext = securitycontext.NewNonRootContext()
+	}
+
 	apiServer := corev1.Container{
 		Name:            APIServerContainerName,
 		Image:           c.apiServerImage,
 		ImagePullPolicy: ImagePullPolicy(),
 		Args:            c.startUpArgs(),
 		Env:             env,
-		// OpenShift apiserver needs privileged access to write audit logs to host path volume.
-		// Audit logs are owned by root on hosts so we need to be root user and group.
-		SecurityContext: securitycontext.NewRootContext(c.cfg.Openshift),
+		SecurityContext: securityContext,
 		VolumeMounts:    volumeMounts,
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
